@@ -124,16 +124,52 @@ final class MenuScraper: @unchecked Sendable {
             let html = try await fetchHTML(from: config.url)
             let doc = try SwiftSoup.parse(html)
 
-            // Build today's section ID
-            let sectionID = buildNostalgiaMenuSectionID()
+            // All daily menu sections are pre-rendered with IDs like:
+            //   menu-denne-menu-streda-15-07-2026
+            // The site shows current + next 2 weekdays, so today's section
+            // may not exist if menus aren't published yet. Strategy:
+            //   1. Try today's exact section ID first.
+            //   2. Fall back to the first available menuv2-section whose
+            //      ID contains today's dd-mm-yyyy date string.
+            //   3. Fall back to the very first menuv2-section (nearest day).
 
-            guard let section = try doc.select("div#\(sectionID)").first() else {
-                // Menu section not in static HTML — likely JS-rendered
+            let allSections = try doc.select("div.menuv2-section")
+
+            guard !allSections.isEmpty() else {
                 return RestaurantMenu(
                     restaurantName: config.name,
                     zone: config.zone,
                     url: config.url,
                     error: "Menu sa nedá načítať (stránka vyžaduje JavaScript)."
+                )
+            }
+
+            // Build today's date suffix dd-mm-yyyy for matching
+            let calendar = Calendar.current
+            let now = Date()
+            let day   = calendar.component(.day,   from: now)
+            let month = calendar.component(.month,  from: now)
+            let year  = calendar.component(.year,   from: now)
+            let dateSuffix = String(format: "%02d-%02d-%04d", day, month, year)
+
+            // Try exact today ID first, then date-suffix match. If neither is found,
+            // the menu for today is not published yet — do not fall back to another day.
+            let todayID = buildNostalgiaMenuSectionID()
+            let section: Element
+            if let exact = try allSections.first(where: {
+                (try? $0.attr("id")) == todayID
+            }) {
+                section = exact
+            } else if let dateMatch = try allSections.first(where: {
+                ((try? $0.attr("id")) ?? "").contains(dateSuffix)
+            }) {
+                section = dateMatch
+            } else {
+                return RestaurantMenu(
+                    restaurantName: config.name,
+                    zone: config.zone,
+                    url: config.url,
+                    error: "Dnešné menu ešte nie je zverejnené."
                 )
             }
 

@@ -44,6 +44,7 @@ final class LocalCacheManager: @unchecked Sendable {
         do {
             let data = try Data(contentsOf: cacheFileURL)
             let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
             return try decoder.decode(CachedMenuData.self, from: data)
         } catch {
             print("Cache load error: \(error)")
@@ -54,13 +55,14 @@ final class LocalCacheManager: @unchecked Sendable {
     // MARK: - Save
 
     func save(menus: [RestaurantMenu]) {
-        let payload = CachedMenuData(date: todayString, menus: menus)
+        let payload = CachedMenuData(date: todayString, savedAt: Date(), menus: menus)
         do {
             try FileManager.default.createDirectory(
                 at: cacheDirectory,
                 withIntermediateDirectories: true
             )
             let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(payload)
             try data.write(to: cacheFileURL, options: .atomic)

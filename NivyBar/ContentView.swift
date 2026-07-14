@@ -9,20 +9,43 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var vm: MenuViewModel
+    @Environment(\.openWindow) private var openWindow
+
+    // Hardcoded restaurants always have displayOrder < 0
+    private var hardcodedMenus: [RestaurantMenu] { vm.menus.filter { $0.displayOrder < 0 } }
+    private var userMenus: [RestaurantMenu]      { vm.menus.filter { $0.displayOrder >= 0 } }
 
     var body: some View {
         VStack(spacing: 0) {
             HeaderView()
             Divider()
             ScrollView {
-                LazyVStack(spacing: 12) {
+                VStack(spacing: 12) {
                     if vm.isLoading && vm.menus.isEmpty {
                         LoadingPlaceholderView()
                     } else if vm.menus.isEmpty {
                         EmptyStateView()
                     } else {
-                        ForEach(vm.menus) { menu in
+                        // Hardcoded restaurants
+                        ForEach(hardcodedMenus) { menu in
                             RestaurantCardView(menu: menu)
+                        }
+
+                        // Separator + user restaurants
+                        if !userMenus.isEmpty {
+                            HStack {
+                                VStack { Divider() }
+                                Text("Custom")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    .fixedSize()
+                                VStack { Divider() }
+                            }
+                            .padding(.horizontal, 4)
+
+                            ForEach(userMenus) { menu in
+                                RestaurantCardView(menu: menu)
+                            }
                         }
                     }
                 }
@@ -30,12 +53,10 @@ struct ContentView: View {
                 .padding(.vertical, 10)
             }
             Divider()
-            FooterView()
+            FooterView(openWindow: openWindow)
         }
         .frame(width: 340, height: 480)
         .background(.background)
-        // .task is cancelled and re-run on each appearance, but the isLoading
-        // guard inside refresh() prevents concurrent scrapes.
         .task { await vm.onAppear() }
     }
 }
@@ -64,7 +85,7 @@ private struct HeaderView: View {
                         .imageScale(.medium)
                 }
                 .buttonStyle(.borderless)
-                .help("Aktualizovať menu")
+                .help("Refresh menus")
             }
         }
         .padding(.horizontal, 14)
@@ -76,16 +97,37 @@ private struct HeaderView: View {
 
 private struct FooterView: View {
     @EnvironmentObject private var vm: MenuViewModel
+    let openWindow: OpenWindowAction
 
     var body: some View {
-        HStack {
+        HStack(spacing: 6) {
             Image(systemName: "clock")
                 .foregroundStyle(.tertiary)
                 .imageScale(.small)
             Text("Aktualizované: \(vm.lastUpdatedLabel)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
             Spacer()
+
+            // Custom restaurant count hint
+            if vm.userRestaurantCount > 0 {
+                Text("\(vm.userRestaurantCount) custom")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            // Settings gear
+            Button {
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                openWindow(id: "settings")
+            } label: {
+                Image(systemName: "gearshape")
+                    .imageScale(.medium)
+            }
+            .buttonStyle(.borderless)
+            .help("Restaurant settings")
+
             Button("Ukončiť") {
                 NSApplication.shared.terminate(nil)
             }
@@ -103,7 +145,11 @@ private struct FooterView: View {
 struct RestaurantCardView: View {
     let menu: RestaurantMenu
 
-    // Map restaurant name → SF Symbol
+    private var iconColor: Color {
+        if let hex = menu.accentColorHex { return Color(hex: hex) }
+        return Color.accentColor
+    }
+
     private var icon: String {
         switch menu.restaurantName {
         case "Pivovar Komín": return "mug.fill"
@@ -113,11 +159,18 @@ struct RestaurantCardView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Card header
+        HStack(spacing: 0) {
+            // Accent color bar
+            RoundedRectangle(cornerRadius: 2)
+                .fill(iconColor)
+                .frame(width: 4)
+                .padding(.vertical, 10)
+
+            VStack(alignment: .leading, spacing: 0) {
+                // Card header
             HStack(alignment: .center, spacing: 6) {
                 Image(systemName: icon)
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(iconColor)
                     .imageScale(.small)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
@@ -166,12 +219,14 @@ struct RestaurantCardView: View {
                 }
                 .padding(.bottom, 6)
             }
+            }
         }
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(Color(NSColor.controlBackgroundColor))
                 .shadow(color: .black.opacity(0.06), radius: 2, x: 0, y: 1)
         )
+        .drawingGroup()
     }
 }
 
@@ -286,7 +341,6 @@ private struct EmptyStateView: View {
 
 #Preview {
     let vm = MenuViewModel()
-    // Inject sample data so preview is useful
     ContentView()
         .environmentObject(vm)
 }

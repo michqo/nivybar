@@ -32,12 +32,14 @@ struct RestaurantMenu: Codable, Identifiable, Sendable {
     let restaurantName: String
     let zone: String
     let url: String
-    let unifiedPrice: String?   // e.g. Komín shows one price for all dishes
+    let unifiedPrice: String?       // e.g. Komín shows one price for all dishes
     let items: [MenuItem]
-    let error: String?          // non-nil when scraping failed
+    let error: String?              // non-nil when scraping failed
+    let accentColorHex: String?     // nil = use system accentColor; set for user restaurants
+    var displayOrder: Int           // used when merging hardcoded + user lists; hardcoded = negative
 
     enum CodingKeys: String, CodingKey {
-        case restaurantName, zone, url, unifiedPrice, items, error
+        case restaurantName, zone, url, unifiedPrice, items, error, accentColorHex, displayOrder
     }
 
     nonisolated init(
@@ -46,7 +48,9 @@ struct RestaurantMenu: Codable, Identifiable, Sendable {
         url: String,
         unifiedPrice: String? = nil,
         items: [MenuItem] = [],
-        error: String? = nil
+        error: String? = nil,
+        accentColorHex: String? = nil,
+        displayOrder: Int = 0
     ) {
         self.id = UUID()
         self.restaurantName = restaurantName
@@ -55,6 +59,8 @@ struct RestaurantMenu: Codable, Identifiable, Sendable {
         self.unifiedPrice = unifiedPrice
         self.items = items
         self.error = error
+        self.accentColorHex = accentColorHex
+        self.displayOrder = displayOrder
     }
 
     var hasError: Bool { error != nil }
@@ -65,7 +71,8 @@ struct RestaurantMenu: Codable, Identifiable, Sendable {
 // MARK: - CachedMenuData (root JSON envelope)
 
 struct CachedMenuData: Codable {
-    let date: String        // "yyyy-MM-dd" — day the data was scraped
+    let date: String        // "yyyy-MM-dd" — day the data was scraped (staleness check)
+    let savedAt: Date?      // full timestamp when cache was written (nil for old format)
     let menus: [RestaurantMenu]
 }
 
