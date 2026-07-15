@@ -68,7 +68,7 @@ private struct HeaderView: View {
 
     var body: some View {
         HStack {
-            Image(systemName: "fork.knife")
+            Image(systemName: Configuration.UI.menuBarIcon)
                 .foregroundStyle(.secondary)
             Text("NivyBar")
                 .font(.headline)
@@ -81,7 +81,7 @@ private struct HeaderView: View {
                 Button {
                     Task { await vm.refresh() }
                 } label: {
-                    Image(systemName: "arrow.clockwise")
+                    Image(systemName: Configuration.UI.iconRefresh)
                         .imageScale(.medium)
                 }
                 .buttonStyle(.borderless)
@@ -101,7 +101,7 @@ private struct FooterView: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "clock")
+            Image(systemName: Configuration.UI.iconClock)
                 .foregroundStyle(.tertiary)
                 .imageScale(.small)
             Text("Aktualizované: \(vm.lastUpdatedLabel)")
@@ -120,9 +120,9 @@ private struct FooterView: View {
             // Settings gear
             Button {
                 NSApplication.shared.activate(ignoringOtherApps: true)
-                openWindow(id: "settings")
+                openWindow(id: Configuration.UI.settingsWindowID)
             } label: {
-                Image(systemName: "gearshape")
+                Image(systemName: Configuration.UI.iconGear)
                     .imageScale(.medium)
             }
             .buttonStyle(.borderless)
@@ -152,9 +152,9 @@ struct RestaurantCardView: View {
 
     private var icon: String {
         switch menu.restaurantName {
-        case "Pivovar Komín": return "mug.fill"
-        case "Nostalgia Nivy": return "fork.knife"
-        default:              return "fork.knife.circle"
+        case "Pivovar Komín": return Configuration.UI.iconKomín
+        case "Nostalgia Nivy": return Configuration.UI.menuBarIcon
+        default:              return Configuration.UI.iconDefault
         }
     }
 
@@ -284,7 +284,7 @@ private struct ErrorRowView: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "exclamationmark.triangle")
+            Image(systemName: Configuration.UI.iconExclamation)
                 .imageScale(.small)
                 .foregroundStyle(.orange)
             Text(message)
@@ -320,7 +320,7 @@ private struct EmptyStateView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            Image(systemName: "fork.knife.circle")
+            Image(systemName: Configuration.UI.iconDefault)
                 .font(.system(size: 32))
                 .foregroundStyle(.tertiary)
             Text("Žiadne menu")

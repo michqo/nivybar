@@ -20,7 +20,7 @@ struct NivyBarApp: App {
 
     var body: some Scene {
         // MARK: Menu bar panel
-        MenuBarExtra("NivyBar", systemImage: "fork.knife") {
+        MenuBarExtra("NivyBar", systemImage: Configuration.UI.menuBarIcon) {
             ContentView()
                 .environmentObject(viewModel)
                 .environmentObject(store)
@@ -32,7 +32,7 @@ struct NivyBarApp: App {
         .menuBarExtraStyle(.window)
 
         // MARK: Settings window (independent macOS window, not a panel)
-        Window("Restaurant Settings", id: "settings") {
+        Window("Restaurant Settings", id: Configuration.UI.settingsWindowID) {
             SettingsView()
                 .environmentObject(store)
                 .environmentObject(viewModel)

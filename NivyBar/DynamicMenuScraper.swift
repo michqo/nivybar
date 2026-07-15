@@ -9,12 +9,12 @@ import SwiftSoup
 final class DynamicMenuScraper: @unchecked Sendable {
 
     static let shared = DynamicMenuScraper()
-    private init() {}
 
-    private let userAgent =
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) " +
-        "Version/17.4 Safari/605.1.15"
+    private let fetcher: HTMLFetching
+
+    init(fetcher: HTMLFetching = HTMLFetcher()) {
+        self.fetcher = fetcher
+    }
 
     // MARK: - Scrape all user restaurants concurrently
 
@@ -53,9 +53,9 @@ final class DynamicMenuScraper: @unchecked Sendable {
         do {
             let html: String
             if recipe.usesJavaScript {
-                html = try await fetchHTMLViaJina(urlString: restaurant.url)
+                html = try await self.fetcher.fetchViaJina(urlString: restaurant.url)
             } else {
-                html = try await fetchHTML(from: restaurant.url)
+                html = try await self.fetcher.fetch(urlString: restaurant.url)
             }
             let doc  = try SwiftSoup.parse(html)
 
@@ -115,7 +115,7 @@ final class DynamicMenuScraper: @unchecked Sendable {
             // Retry with Jina only if we did not already use Jina for this fetch.
             let dishCount = items.filter { !$0.isSoup }.count
             if dishCount == 0 && !recipe.usesJavaScript {
-                let jinaHTML = try? await fetchHTMLViaJina(urlString: restaurant.url)
+                let jinaHTML = try? await self.fetcher.fetchViaJina(urlString: restaurant.url)
                 if let jinaHTML, let jinaDoc = try? SwiftSoup.parse(jinaHTML) {
                     var jinaItems: [MenuItem] = items  // keep the soup we already found
                     if let soupSel = recipe.soupSelector, !soupSel.isEmpty,
@@ -175,41 +175,6 @@ final class DynamicMenuScraper: @unchecked Sendable {
     }
 
     // MARK: - HTML fetch
-
-    nonisolated private func fetchHTML(from urlString: String) async throws -> String {
-        guard let url = URL(string: urlString) else {
-            throw ScraperError.parseError("Invalid URL: \(urlString)")
-        }
-        var request = URLRequest(url: url, timeoutInterval: 15)
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
-        request.setValue("sk-SK,sk;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
-        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-
-        let (data, _) = try await URLSession.shared.data(for: request)
-        guard let html = String(data: data, encoding: .utf8)
-                      ?? String(data: data, encoding: .isoLatin1) else {
-            throw ScraperError.parseError("Could not decode response from \(urlString)")
-        }
-        return html
-    }
-
-    nonisolated private func fetchHTMLViaJina(urlString: String) async throws -> String {
-        let jinaURL = "https://r.jina.ai/\(urlString)"
-        guard let url = URL(string: jinaURL) else {
-            throw ScraperError.parseError("Invalid Jina URL: \(jinaURL)")
-        }
-        var request = URLRequest(url: url, timeoutInterval: 30)
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
-
-        let (data, _) = try await URLSession.shared.data(for: request)
-        guard let html = String(data: data, encoding: .utf8)
-                      ?? String(data: data, encoding: .isoLatin1) else {
-            throw ScraperError.parseError("Could not decode Jina response from \(urlString)")
-        }
-        return html
-    }
 
     // MARK: - Helper
 

@@ -6,24 +6,6 @@
 import Foundation
 import SwiftSoup
 
-// MARK: - Scraper Error
-
-enum ScraperError: LocalizedError, Sendable {
-    case networkError(String)   // stores localizedDescription — Error itself is not Sendable
-    case parseError(String)
-    case menuNotFound(String)
-    case weekend
-
-    var errorDescription: String? {
-        switch self {
-        case .networkError(let msg): return "Sieťová chyba: \(msg)"
-        case .parseError(let msg):   return "Chyba pri spracovaní: \(msg)"
-        case .menuNotFound(let msg): return msg
-        case .weekend:               return "Cez víkend nie je obedové menu."
-        }
-    }
-}
-
 // MARK: - MenuScraper
 
 // Explicitly nonisolated so network + SwiftSoup CPU work runs off MainActor,
@@ -31,13 +13,12 @@ enum ScraperError: LocalizedError, Sendable {
 final class MenuScraper: @unchecked Sendable {
 
     static let shared = MenuScraper()
-    private init() {}
 
-    // Standard browser User-Agent (Safari on macOS)
-    private let userAgent =
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) " +
-        "Version/17.4 Safari/605.1.15"
+    private let fetcher: HTMLFetching
+
+    init(fetcher: HTMLFetching = HTMLFetcher()) {
+        self.fetcher = fetcher
+    }
 
     // Slovak weekday names (Calendar.weekday: 1=Sun, 2=Mon … 7=Sat)
     private let slovakWeekdays: [Int: String] = [
@@ -80,30 +61,6 @@ final class MenuScraper: @unchecked Sendable {
 
     // MARK: - Shared fetch
 
-    nonisolated private func fetchHTML(from urlString: String) async throws -> String {
-        guard let url = URL(string: urlString) else {
-            throw ScraperError.parseError("Invalid URL: \(urlString)")
-        }
-        var request = URLRequest(url: url, timeoutInterval: 15)
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
-        request.setValue("sk-SK,sk;q=0.9,en;q=0.8", forHTTPHeaderField: "Accept-Language")
-        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-
-        do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            guard let html = String(data: data, encoding: .utf8)
-                          ?? String(data: data, encoding: .isoLatin1) else {
-                throw ScraperError.parseError("Could not decode response from \(urlString)")
-            }
-            return html
-        } catch let e as ScraperError {
-            throw e
-        } catch {
-            throw ScraperError.networkError(error.localizedDescription)
-        }
-    }
-
     // MARK: - 1. Nostalgia Nivy (Restaumatic SPA)
     //
     // The site is a JS SPA; static HTML may or may not contain the rendered menu.
@@ -121,7 +78,7 @@ final class MenuScraper: @unchecked Sendable {
         let config = RestaurantConfig.all[0]
 
         do {
-            let html = try await fetchHTML(from: config.url)
+            let html = try await self.fetcher.fetch(urlString: config.url)
             let doc = try SwiftSoup.parse(html)
 
             // All daily menu sections are pre-rendered with IDs like:
@@ -235,7 +192,7 @@ final class MenuScraper: @unchecked Sendable {
                 items: items
             )
 
-        } catch let e as ScraperError {
+        } catch let e as NivyBarError {
             return RestaurantMenu(
                 restaurantName: config.name,
                 zone: config.zone,
@@ -285,7 +242,7 @@ final class MenuScraper: @unchecked Sendable {
         let config = RestaurantConfig.all[1]
 
         do {
-            let html = try await fetchHTML(from: config.url)
+            let html = try await self.fetcher.fetch(urlString: config.url)
             let doc = try SwiftSoup.parse(html)
 
             // Unified price from icon boxes
@@ -443,7 +400,7 @@ final class MenuScraper: @unchecked Sendable {
                 items: items
             )
 
-        } catch let e as ScraperError {
+        } catch let e as NivyBarError {
             return RestaurantMenu(
                 restaurantName: config.name,
                 zone: config.zone,
@@ -484,7 +441,7 @@ final class MenuScraper: @unchecked Sendable {
         let config = RestaurantConfig.all[2]
 
         do {
-            let html = try await fetchHTML(from: config.url)
+            let html = try await self.fetcher.fetch(urlString: config.url)
             let doc = try SwiftSoup.parse(html)
 
             guard let todaySection = try doc.select("div.dnesne_menu").first() else {
@@ -579,7 +536,7 @@ final class MenuScraper: @unchecked Sendable {
                 items: items
             )
 
-        } catch let e as ScraperError {
+        } catch let e as NivyBarError {
             return RestaurantMenu(
                 restaurantName: config.name,
                 zone: config.zone,

@@ -12,26 +12,22 @@ final class UserRestaurantStore: ObservableObject {
 
     @Published var restaurants: [UserRestaurant] = []
 
-    // Fired by MenuViewModel when it wants to re-scrape after recipe changes
     let didUpdateRecipe = PassthroughSubject<UUID, Never>()
-
-    // Fired when restaurants are added, deleted, or reordered
     let didChangeRestaurants = PassthroughSubject<Void, Never>()
 
-    private var saveTask: Task<Void, Never>?
     private let dirtySubject = PassthroughSubject<Void, Never>()
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Paths
 
-    private var storeDirectory: URL {
+    private var storeDirectory: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first!
-            .appendingPathComponent("NivyBar", isDirectory: true)
+            .first?
+            .appendingPathComponent(Configuration.System.appSupportFolder, isDirectory: true)
     }
 
-    private var storeFileURL: URL {
-        storeDirectory.appendingPathComponent("user_restaurants.json")
+    private var storeFileURL: URL? {
+        storeDirectory?.appendingPathComponent(Configuration.System.storeFileName)
     }
 
     // MARK: - Init
@@ -39,6 +35,14 @@ final class UserRestaurantStore: ObservableObject {
     init() {
         load()
         setupDebouncedSave()
+        observeTermination()
+    }
+
+    private func observeTermination() {
+        NotificationCenter.default
+            .publisher(for: NSApplication.willTerminateNotification)
+            .sink { [weak self] _ in self?.persistNow() }
+            .store(in: &cancellables)
     }
 
     // MARK: - Debounced save
@@ -57,31 +61,32 @@ final class UserRestaurantStore: ObservableObject {
     // MARK: - Load
 
     private func load() {
-        guard FileManager.default.fileExists(atPath: storeFileURL.path),
-              let data = try? Data(contentsOf: storeFileURL) else { return }
+        guard let file = storeFileURL,
+              FileManager.default.fileExists(atPath: file.path),
+              let data = try? Data(contentsOf: file) else {
+            return
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         do {
             let loaded = try decoder.decode([UserRestaurant].self, from: data)
             restaurants = loaded.sorted { $0.displayOrder < $1.displayOrder }
         } catch {
-            print("UserRestaurantStore failed to decode \(storeFileURL.path): \(error)")
+            print(NivyBarError.storeDecodeFailed(error.localizedDescription).errorDescription ?? "")
         }
     }
 
     // MARK: - Save
 
     func persistNow() {
+        guard let dir = storeDirectory, let file = storeFileURL else { return }
         do {
-            try FileManager.default.createDirectory(
-                at: storeDirectory,
-                withIntermediateDirectories: true
-            )
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(restaurants)
-            try data.write(to: storeFileURL, options: .atomic)
+            try data.write(to: file, options: .atomic)
         } catch {
             print("UserRestaurantStore save error: \(error)")
         }
@@ -94,12 +99,14 @@ final class UserRestaurantStore: ObservableObject {
         r.displayOrder = (restaurants.map(\.displayOrder).max() ?? -1) + 1
         restaurants.append(r)
         markDirty()
+        didChangeRestaurants.send()
     }
 
     func update(_ restaurant: UserRestaurant) {
         guard let idx = restaurants.firstIndex(where: { $0.id == restaurant.id }) else { return }
         restaurants[idx] = restaurant
         markDirty()
+        didChangeRestaurants.send()
     }
 
     func delete(_ restaurant: UserRestaurant) {
@@ -143,10 +150,10 @@ final class UserRestaurantStore: ObservableObject {
     // MARK: - Clear all
 
     func clearAll() {
-        saveTask?.cancel()
-        saveTask = nil
         restaurants.removeAll()
-        try? FileManager.default.removeItem(at: storeFileURL)
+        if let file = storeFileURL {
+            try? FileManager.default.removeItem(at: file)
+        }
         didChangeRestaurants.send()
     }
 

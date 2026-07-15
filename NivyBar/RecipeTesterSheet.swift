@@ -7,7 +7,6 @@ import SwiftUI
 
 struct RecipeTesterSheet: View {
     let restaurant: UserRestaurant
-    @EnvironmentObject private var store: UserRestaurantStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var isRunning = false
@@ -137,12 +136,10 @@ struct RecipeTesterSheet: View {
         let menu = await DynamicMenuScraper.shared.scrape(restaurant: restaurant)
         result = menu
 
-        // If no results, try to fetch raw HTML for debug snippet
         if menu.hasError || menu.dishes.isEmpty {
-            if let url = URL(string: restaurant.url),
-               let (data, _) = try? await URLSession.shared.data(from: url),
-               let html = String(data: data, encoding: .utf8) {
-                rawHTMLSnippet = String(html.prefix(2000))
+            let fetcher = HTMLFetcher()
+            if let html = try? await fetcher.fetch(urlString: restaurant.url) {
+                rawHTMLSnippet = String(html.prefix(Configuration.AI.htmlTruncationLimit / 15))
             }
         }
 

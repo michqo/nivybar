@@ -6,172 +6,24 @@
 import Foundation
 import SwiftSoup
 
-// MARK: - AI Error
-
-enum AIError: LocalizedError, Sendable {
-    case missingConfig(String)
-    case networkError(String)
-    case httpError(Int, String)
-    case emptyResponse
-    case jsonParseFailure(String)   // raw AI text included so UI can show it
-
-    var errorDescription: String? {
-        switch self {
-        case .missingConfig(let m):     return "Configuration error: \(m)"
-        case .networkError(let m):      return "Network error: \(m)"
-        case .httpError(let code, let m): return "HTTP \(code): \(m)"
-        case .emptyResponse:            return "AI returned an empty response."
-        case .jsonParseFailure(let raw): return "Could not parse AI response. Raw: \(raw)"
-        }
-    }
-
-    /// Raw AI text — non-nil only for jsonParseFailure
-    var rawAIResponse: String? {
-        if case .jsonParseFailure(let raw) = self { return raw }
-        return nil
-    }
-}
-
-// MARK: - AIConfig
-
-/// Resolves AI configuration from UserDefaults first, then environment vars.
-/// GUI apps launched from Finder/Xcode don't inherit shell env (fish/zsh),
-/// so UserDefaults is the primary source for interactive users.
-enum AIConfig {
-
-    nonisolated static let defaultBaseURL = "https://api.openai.com/v1"
-    nonisolated static let baseURLKey    = "ai.baseURL"
-    nonisolated static let apiKeyKey     = "ai.apiKey"
-    nonisolated static let modelKey      = "ai.model"
-    nonisolated static let dailyLimitKey = "ai.dailyLimit"
-    nonisolated static let availableModelsKey = "ai.availableModels"
-    nonisolated static let availableModelsFetchedAtKey = "ai.availableModelsFetchedAt"
-
-    nonisolated static var baseURL: String? {
-        let ud = UserDefaults.standard.string(forKey: baseURLKey)
-        if let ud, !ud.isEmpty { return ud }
-        return ProcessInfo.processInfo.environment["OPENAI_BASE_URL"]
-            ?? defaultBaseURL
-    }
-
-    nonisolated static var availableModels: [String] {
-        UserDefaults.standard.stringArray(forKey: availableModelsKey) ?? []
-    }
-
-    nonisolated static func setAvailableModels(_ models: [String]) {
-        UserDefaults.standard.set(models, forKey: availableModelsKey)
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: availableModelsFetchedAtKey)
-    }
-
-    nonisolated static var apiKey: String? {
-        let ud = UserDefaults.standard.string(forKey: apiKeyKey)
-        if let ud, !ud.isEmpty { return ud }
-        return ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
-    }
-
-    nonisolated static var model: String? {
-        let ud = UserDefaults.standard.string(forKey: modelKey)
-        if let ud, !ud.isEmpty { return ud }
-        return ProcessInfo.processInfo.environment["OPENAI_MODEL"]
-    }
-
-    nonisolated static var isConfigured: Bool {
-        baseURL != nil && apiKey != nil
-    }
-
-    nonisolated static var dailyLimit: Int {
-        let ud = UserDefaults.standard.integer(forKey: dailyLimitKey)
-        if ud > 0 { return ud }
-        if let raw = ProcessInfo.processInfo.environment["NIVY_AI_DAILY_LIMIT"],
-           let n = Int(raw), n > 0 { return n }
-        return 20
-    }
-}
-
-// MARK: - Rate limit error
-
-extension AIError {
-    static func rateLimitExceeded(used: Int, limit: Int) -> AIError {
-        .missingConfig("Daily AI call limit reached (\(used)/\(limit)). Reset tomorrow or raise limit in Settings → AI.")
-    }
-}
-
-// MARK: - AIRateLimiter
-
-/// Persists call count per calendar day to UserDefaults.
-/// Thread-safe: all mutations are serialized through a lock.
-final class AIRateLimiter: @unchecked Sendable {
-
-    nonisolated static let shared = AIRateLimiter()
-    private init() {}
-
-    private let lock = NSLock()
-    private let countKey = "AIRateLimiter.count"
-    private let dateKey  = "AIRateLimiter.date"
-
-    private var dailyLimit: Int { AIConfig.dailyLimit }
-
-    private var todayString: String {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-        return fmt.string(from: Date())
-    }
-
-    /// Returns (allowed: Bool, used: Int, limit: Int)
-    nonisolated func checkAndIncrement() -> (allowed: Bool, used: Int, limit: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        let today = todayString
-        let storedDate = UserDefaults.standard.string(forKey: dateKey) ?? ""
-
-        // Reset counter on new day
-        if storedDate != today {
-            UserDefaults.standard.set(today, forKey: dateKey)
-            UserDefaults.standard.set(0, forKey: countKey)
-        }
-
-        let current = UserDefaults.standard.integer(forKey: countKey)
-        let limit   = dailyLimit
-
-        guard current < limit else {
-            return (false, current, limit)
-        }
-
-        UserDefaults.standard.set(current + 1, forKey: countKey)
-        return (true, current + 1, limit)
-    }
-
-    nonisolated var currentUsage: (used: Int, limit: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-        let today = todayString
-        let storedDate = UserDefaults.standard.string(forKey: dateKey) ?? ""
-        if storedDate != today { return (0, dailyLimit) }
-        return (UserDefaults.standard.integer(forKey: countKey), dailyLimit)
-    }
-}
-
 // MARK: - AIRecipeGenerator
 
 final class AIRecipeGenerator: @unchecked Sendable {
 
     static let shared = AIRecipeGenerator()
-    private init() {}
 
-    private let userAgent =
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) " +
-        "Version/17.4 Safari/605.1.15"
+    private let fetcher: HTMLFetching
+    private let rateLimiter: AIRateLimiter
 
-    private let htmlTruncationLimit = 30_000
+    init(fetcher: HTMLFetching = HTMLFetcher(),
+         rateLimiter: AIRateLimiter = .shared) {
+        self.fetcher = fetcher
+        self.rateLimiter = rateLimiter
+    }
 
-    // Model preference order — first available in env wins, then these fallbacks
-    private let modelFallbackChain = [
-        "claude-sonnet-4-6",    // best at HTML structure + JSON
-        "gpt-5-mini",           // fast, cheap, reliable JSON
-        "haiku",                // smallest Claude if above unavailable
-    ]
+    private let htmlTruncationLimit = Configuration.AI.htmlTruncationLimit
+
+    private let modelFallbackChain = Configuration.AI.modelFallbackChain
 
     private let baseSystemPrompt = """
         You are an expert web scraper analyzing a restaurant daily menu page.
@@ -217,9 +69,8 @@ final class AIRecipeGenerator: @unchecked Sendable {
 
     // MARK: - Public
 
-    nonisolated func generateRecipe(for urlString: String) async -> Result<ScrapingRecipe, AIError> {
-        // 0. Rate limit check — before any network work
-        let rateCheck = AIRateLimiter.shared.checkAndIncrement()
+    nonisolated func generateRecipe(for urlString: String) async -> Result<ScrapingRecipe, NivyBarError> {
+        let rateCheck = rateLimiter.checkAndIncrement()
         guard rateCheck.allowed else {
             return .failure(.rateLimitExceeded(used: rateCheck.used, limit: rateCheck.limit))
         }
@@ -262,7 +113,7 @@ final class AIRecipeGenerator: @unchecked Sendable {
             ? [model]
             : ([model] + modelFallbackChain.filter { $0 != model })
 
-        var lastError: AIError = .emptyResponse
+        var lastError: NivyBarError = .emptyResponse
         for candidate in chain {
             let result = await callLLM(
                 html: truncated,
@@ -278,7 +129,7 @@ final class AIRecipeGenerator: @unchecked Sendable {
             case .failure(let err):
                 // Only retry on HTTP 4xx model-not-found / quota errors,
                 // not on parse failures (those are model-agnostic content issues)
-                if case .jsonParseFailure = err { return result }
+                if case .aiParsingFailed = err { return result }
                 if case .emptyResponse = err    { return result }
                 lastError = err
                 // Continue to next model in chain
@@ -289,56 +140,32 @@ final class AIRecipeGenerator: @unchecked Sendable {
 
     // MARK: - HTML fetch with Jina.ai fallback
 
-    nonisolated private func fetchHTMLWithFallback(urlString: String) async -> Result<(html: String, usedJina: Bool), AIError> {
-        // Primary fetch
-        let primary = await fetchHTML(from: urlString)
-        switch primary {
-        case .success(let html):
-            // JS-rendered detection: body text too short means no real content
+    nonisolated private func fetchHTMLWithFallback(urlString: String) async -> Result<(html: String, usedJina: Bool), NivyBarError> {
+        do {
+            let html = try await fetcher.fetch(urlString: urlString)
             let bodyText = (try? SwiftSoup.parse(html).body()?.text()) ?? ""
-            if bodyText.count >= 800 {
+            if bodyText.count >= Configuration.AI.spaBodyThreshold {
                 return .success((html, false))
             }
-            // Additional check: strip scripts/styles, remaining text < 500 = SPA
             let stripped = stripNoiseTags(from: html)
             let strippedBody = (try? SwiftSoup.parse(stripped).body()?.text()) ?? ""
-            if strippedBody.count >= 500 {
+            if strippedBody.count >= Configuration.AI.spaStrippedThreshold {
                 return .success((html, false))
             }
-            // Fall through to Jina
-        case .failure:
-            break
+        } catch let e as NivyBarError {
+            // Primary fetch failed, fall through to Jina
+            _ = e
+        } catch {
+            // Unexpected error, fall through to Jina
         }
-
-        // Jina.ai fallback — returns rendered HTML/text
-        let jinaURL = "https://r.jina.ai/\(urlString)"
-        let fallback = await fetchHTML(from: jinaURL)
-        switch fallback {
-        case .success(let html):
-            return .success((html, true))
-        case .failure(let err):
-            return .failure(err)
-        }
-    }
-
-    nonisolated private func fetchHTML(from urlString: String) async -> Result<String, AIError> {
-        guard let url = URL(string: urlString) else {
-            return .failure(.networkError("Invalid URL: \(urlString)"))
-        }
-        var request = URLRequest(url: url, timeoutInterval: 20)
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
-        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            guard let html = String(data: data, encoding: .utf8)
-                          ?? String(data: data, encoding: .isoLatin1) else {
-                return .failure(.networkError("Could not decode response from \(urlString)"))
-            }
-            return .success(html)
+            let html = try await fetcher.fetchViaJina(urlString: urlString)
+            return .success((html, true))
+        } catch let e as NivyBarError {
+            return .failure(e)
         } catch {
-            return .failure(.networkError(error.localizedDescription))
+            return .failure(.networkFailure(error.localizedDescription))
         }
     }
 
@@ -357,8 +184,7 @@ final class AIRecipeGenerator: @unchecked Sendable {
 
     nonisolated private func supportsTemperature(_ model: String) -> Bool {
         let lower = model.lowercased()
-        let reasoningPrefixes = ["gpt-5", "o1", "o3", "o4"]
-        for prefix in reasoningPrefixes {
+        for prefix in Configuration.AI.reasoningModelPrefixes {
             if lower.hasPrefix(prefix) { return false }
         }
         return true
@@ -369,12 +195,12 @@ final class AIRecipeGenerator: @unchecked Sendable {
         baseURL: String,
         apiKey: String,
         model: String
-    ) async -> Result<ScrapingRecipe, AIError> {
+    ) async -> Result<ScrapingRecipe, NivyBarError> {
         // Build endpoint URL — strip trailing slash, append /chat/completions
         let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         let endpoint = "\(base)/chat/completions"
         guard let url = URL(string: endpoint) else {
-            return .failure(.networkError("Invalid OPENAI_BASE_URL: \(baseURL)"))
+            return .failure(.networkFailure("Invalid OPENAI_BASE_URL: \(baseURL)"))
         }
 
         var body: [String: Any] = [
@@ -389,7 +215,7 @@ final class AIRecipeGenerator: @unchecked Sendable {
         }
 
         guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
-            return .failure(.networkError("Failed to serialize request body"))
+            return .failure(.networkFailure("Failed to serialize request body"))
         }
 
         var request = URLRequest(url: url, timeoutInterval: 60)
@@ -402,7 +228,7 @@ final class AIRecipeGenerator: @unchecked Sendable {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 let msg = String(data: data, encoding: .utf8) ?? "Unknown error"
-                return .failure(.httpError(http.statusCode, msg))
+                return .failure(.httpFailure(http.statusCode, msg))
             }
 
             // Parse OpenAI-compatible response
@@ -414,7 +240,7 @@ final class AIRecipeGenerator: @unchecked Sendable {
                 let content = message["content"] as? String
             else {
                 let raw = String(data: data, encoding: .utf8) ?? ""
-                return .failure(.jsonParseFailure(raw))
+                return .failure(.aiParsingFailed(rawResponse:raw))
             }
 
             let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -424,13 +250,13 @@ final class AIRecipeGenerator: @unchecked Sendable {
             return parseRecipe(from: trimmed)
 
         } catch {
-            return .failure(.networkError(error.localizedDescription))
+            return .failure(.networkFailure(error.localizedDescription))
         }
     }
 
     // MARK: - Available models
 
-    nonisolated func fetchAvailableModels() async -> Result<[String], AIError> {
+    nonisolated func fetchAvailableModels() async -> Result<[String], NivyBarError> {
         guard let baseURL = AIConfig.baseURL else {
             return .failure(.missingConfig("OPENAI_BASE_URL not set. Configure in Settings → AI."))
         }
@@ -441,7 +267,7 @@ final class AIRecipeGenerator: @unchecked Sendable {
         let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         let endpoint = "\(base)/models"
         guard let url = URL(string: endpoint) else {
-            return .failure(.networkError("Invalid OPENAI_BASE_URL: \(baseURL)"))
+            return .failure(.networkFailure("Invalid OPENAI_BASE_URL: \(baseURL)"))
         }
 
         var request = URLRequest(url: url, timeoutInterval: 30)
@@ -452,7 +278,7 @@ final class AIRecipeGenerator: @unchecked Sendable {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 let msg = String(data: data, encoding: .utf8) ?? "Unknown error"
-                return .failure(.httpError(http.statusCode, msg))
+                return .failure(.httpFailure(http.statusCode, msg))
             }
 
             guard
@@ -460,7 +286,7 @@ final class AIRecipeGenerator: @unchecked Sendable {
                 let modelsArray = json["data"] as? [[String: Any]]
             else {
                 let raw = String(data: data, encoding: .utf8) ?? ""
-                return .failure(.jsonParseFailure(raw))
+                return .failure(.aiParsingFailed(rawResponse:raw))
             }
 
             let ids: [String] = modelsArray.compactMap { $0["id"] as? String }
@@ -469,13 +295,13 @@ final class AIRecipeGenerator: @unchecked Sendable {
             return .success(ids)
 
         } catch {
-            return .failure(.networkError(error.localizedDescription))
+            return .failure(.networkFailure(error.localizedDescription))
         }
     }
 
     // MARK: - Recipe JSON parsing
 
-    nonisolated private func parseRecipe(from text: String) -> Result<ScrapingRecipe, AIError> {
+    nonisolated private func parseRecipe(from text: String) -> Result<ScrapingRecipe, NivyBarError> {
         // Strip markdown code fences if AI ignored instructions
         var cleaned = text
         if cleaned.hasPrefix("```") {
@@ -487,7 +313,7 @@ final class AIRecipeGenerator: @unchecked Sendable {
 
         guard let data = cleaned.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return .failure(.jsonParseFailure(text))
+            return .failure(.aiParsingFailed(rawResponse:text))
         }
 
         guard
@@ -495,7 +321,7 @@ final class AIRecipeGenerator: @unchecked Sendable {
             let rowSelector   = json["mealRowSelector"] as? String,
             let nameInRow     = json["mealNameSelector"] as? String
         else {
-            return .failure(.jsonParseFailure(text))
+            return .failure(.aiParsingFailed(rawResponse:text))
         }
 
         let recipe = ScrapingRecipe(

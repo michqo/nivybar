@@ -14,40 +14,44 @@ final class LocalCacheManager: @unchecked Sendable {
 
     // MARK: - Paths
 
-    private var cacheDirectory: URL {
-        let appSupport = FileManager.default.urls(
+    private var cacheDirectory: URL? {
+        FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
-        ).first!
-        return appSupport.appendingPathComponent("NivyBar", isDirectory: true)
+        ).first?.appendingPathComponent(Configuration.System.appSupportFolder, isDirectory: true)
     }
 
-    private var cacheFileURL: URL {
-        cacheDirectory.appendingPathComponent("cached_menus.json")
+    private var cacheFileURL: URL? {
+        cacheDirectory?.appendingPathComponent(Configuration.System.cacheFileName)
     }
 
     // MARK: - Date helpers
 
-    var todayString: String {
+    private static let dateFormatter: DateFormatter = {
         let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-        fmt.locale = Locale(identifier: "sk_SK")
-        return fmt.string(from: Date())
+        fmt.dateFormat = Configuration.System.dateFormat
+        fmt.locale = Locale(identifier: Configuration.System.skLocale)
+        return fmt
+    }()
+
+    var todayString: String {
+        Self.dateFormatter.string(from: Date())
     }
 
     // MARK: - Load
 
     func load() -> CachedMenuData? {
-        guard FileManager.default.fileExists(atPath: cacheFileURL.path) else {
+        guard let file = cacheFileURL,
+              FileManager.default.fileExists(atPath: file.path) else {
             return nil
         }
         do {
-            let data = try Data(contentsOf: cacheFileURL)
+            let data = try Data(contentsOf: file)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             return try decoder.decode(CachedMenuData.self, from: data)
         } catch {
-            print("Cache load error: \(error)")
+            print(NivyBarError.cacheLoadFailed(error.localizedDescription).errorDescription ?? "")
             return nil
         }
     }
@@ -55,25 +59,27 @@ final class LocalCacheManager: @unchecked Sendable {
     // MARK: - Save
 
     func save(menus: [RestaurantMenu]) {
+        guard let dir = cacheDirectory, let file = cacheFileURL else {
+            print(NivyBarError.cacheWriteFailed("Cache directory unavailable").errorDescription ?? "")
+            return
+        }
         let payload = CachedMenuData(date: todayString, savedAt: Date(), menus: menus)
         do {
-            try FileManager.default.createDirectory(
-                at: cacheDirectory,
-                withIntermediateDirectories: true
-            )
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(payload)
-            try data.write(to: cacheFileURL, options: .atomic)
+            try data.write(to: file, options: .atomic)
         } catch {
-            print("Cache save error: \(error)")
+            print(NivyBarError.cacheWriteFailed(error.localizedDescription).errorDescription ?? "")
         }
     }
 
     // MARK: - Clear
 
     func clear() {
-        try? FileManager.default.removeItem(at: cacheFileURL)
+        guard let file = cacheFileURL else { return }
+        try? FileManager.default.removeItem(at: file)
     }
 }

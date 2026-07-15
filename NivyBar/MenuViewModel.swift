@@ -180,20 +180,36 @@ final class MenuViewModel: ObservableObject {
 
     // MARK: - Computed
 
+    func reset() {
+        menus = []
+        lastUpdated = nil
+        isLoading = false
+        errorMessage = nil
+        cache.clear()
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        fmt.locale = Locale(identifier: Configuration.System.skLocale)
+        return fmt
+    }()
+
+    private static let fullFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateStyle = .short
+        fmt.timeStyle = .short
+        fmt.locale = Locale(identifier: Configuration.System.skLocale)
+        return fmt
+    }()
+
     var lastUpdatedLabel: String {
         guard let date = lastUpdated else { return "Nikdy" }
         let cal = Calendar.current
         if cal.isDateInToday(date) {
-            let fmt = DateFormatter()
-            fmt.dateFormat = "HH:mm"
-            fmt.locale = Locale(identifier: "sk_SK")
-            return "Dnes o \(fmt.string(from: date))"
+            return "Dnes o \(Self.timeFormatter.string(from: date))"
         } else {
-            let fmt = DateFormatter()
-            fmt.dateStyle = .short
-            fmt.timeStyle = .short
-            fmt.locale = Locale(identifier: "sk_SK")
-            return fmt.string(from: date)
+            return Self.fullFormatter.string(from: date)
         }
     }
 
